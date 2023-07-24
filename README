@@ -1,0 +1,76 @@
+How to install a custom ROM on H96 Max RK3588 -- V58
+
+First of all, with regards to hardware you'll need an USB A <=> USB A cable. You'll connect the box on the black USB port, the one closest to the front.
+
+This documentation will explain how to flash GSI (Generic System Image. A kind of Android custom ROM that re-uses original OEM drivers) on this box.
+
+== Flashing original OEM ROM
+
+First, you should start by ensuring that you're capable of flashing stock ROM, to do that, download latest factory image from https://www.h96tvbox.com/firmware-download-from-h96-tv-box-manufacturer/
+
+At this time, latest update is 2022.11.16 https://drive.google.com/file/d/1AvfgFdDQlbZot9JmIazj8tBCVWsPwse1/view?usp=sharing
+
+Then you'll need up-to-date Rockchip tools (I have downloaded Linux_Upgrade_Tool_v2.4 from https://drive.usercontent.google.com/download?id=1ui4RD-33T380fNvgmQ_EzEDoiw9sP3mW&export=download&authuser=0&confirm=t&uuid=019835c6-56fd-41cc-a4f4-471b77e52f20&at=AC2mKKSIkqiDAxVZLTYGYu6ty_Td:1689982414105 )
+
+Unconnect power plug, press the "reset" button (the small hole between the two antennas), keep pressing it, plug in power plug, then connect the USB-A cable in the black USB port, and to your computer on the other side.
+
+Now launch the flash:
+sudo ./upgrade_tool uf RK3588_userdebug_H96_Max_V58_12_20221116.1404.img
+
+Now, test whether you need the next step. Boot the ROM, enable developer settings, go in developer settings, and select to "connect to computer". If you have ADB working over USB, then you can probably skip next stage.
+
+== How to prepare to allow custom ROM
+
+As of 2022.11.16 release, the USB-A <=> USB-A cable only works in bootloader mode, but we'll need for adb and fastbootd.
+
+To do that, we'll need to modify the original image, to switch the black USB port from "host" to "otg". And we'll need to do that to boot.img (for android) and recovery.img (for recovery/fastbootd)
+
+First off, download https://github.com/ilmich/rkflashtool, edit rkunpackfw.c and remove " fatal("cannot find BOOT signature\n");", then compile it. Then run rkunpackfw on original image:
+./rkunpackfw RK3588_userdebug_H96_Max_V58_12_20221116.1404.img
+(Note: the generated super.img is corrupted, but we don't really care about it here [1])
+
+You'll get boot.img and recovery.img we'll modify. The process for both is identical:
+Separate kernel/initramfs/stage2:
+> abootimg -x boot.img # This will create bootimg.cfg, initrd.img, zImage, stage2.img, but stage2.img will be corrupted
+> magiskboot unpack boot.img # This will create kernel dtb ramdisk.cpio, but modified. we'll want its "second"
+Unpack second:
+> resource_tool --image=second.img --unpack
+Make the device-tree modifiable:
+> dtc -I dtb -O dts out/rk-kernel.dtb -o dts
+Edit the "dts" file in a text editor. Find the usb@fc000000 section. Inside it you'll find dr_mode = "host";. Change it to dr_mode = "otg";
+Recompile the device-tree:
+> dtc dts -o out/rk-kernel.dtb
+Repack second:
+> (cd out; /build/RK2/git/git/rkbin/tools/resource_tool --image=../new-second --pack $(find -type f))
+Recreate boot.img (or recovery.img):
+> mkbootimg --kernel ../zImage --ramdisk ../initrd.img --second new-resource.img -o new-boot.img --cmdline 'console=ttyFIQ0 firmware_class.path=/vendor/etc/firmware init=/init rootwait ro loop.max_part=7 androidboot.console=ttyFIQ0 androidboot.wificountrycode=XS androidboot.hardware=rk30board androidboot.boot_devices=fe2e0000.mmc androidboot.selinux=permissive buildvariant=userdebug phh=1 printk.devkmsg=on'
+
+(Note: the last two arguments have been added by myself, to help testing and debugging. You can find the original arguments in bootimg.cfg that has been created by abootimg -x)
+
+And finally you can flash the generated boot.img:
+> fastboot flash boot new-boot.img
+Or when doing it for recovery.img:
+> fastboot flash recovery new-boot.img
+
+Once this is done, do `fastboot erase misc` (this shouldn't be needed but bootloader seems to have a weird behavior), then `fastboot reboot` to get back into the original ROM.
+
+Now, when going in developer settings and select "connect to computer", the box appears in `adb devices` and adb works properly.
+
+== Flashing GSI!
+
+Okay, the first step is to select an ARM64 AB GSI. At the time of writing, there is no such public GSI available for TV (and furthermore not one that boots on this box). If you arrive at this step, feel free to send me a shout to phh@phh.me, I'll send you whatever I have at the time.
+
+Boot into orignal ROM, do:
+> adb reboot fastboot
+
+The device will now reboot into recovery into a special mode called fastbootd, you can flash the system image:
+> fastboot flash system system.img
+If you get an error saying that fastboot can't resize the partition because there isn't enough space, you can remove some partitions that are useless for our ROM:
+> fastboot delete-logical-partition product
+> fastboot delete-logical-partition system_ext
+Then try again
+
+Once this is done, take your keyboard/remote, on the screen select "Enter recovery", then do "Factory reset/wipe data", then reboot.
+
+And enjoy.
+
